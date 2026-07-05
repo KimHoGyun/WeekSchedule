@@ -55,6 +55,7 @@ enum ScheduleCategory {
   writing('글쓰기', Icons.edit_note_outlined, Color(0xFFEFC75F)),
   practice('실습', Icons.movie_creation_outlined, Color(0xFFFFA65E)),
   culture('교양', Icons.auto_stories_outlined, Color(0xFF9A7DE0)),
+  travel('여행', Icons.flight_takeoff_outlined, Color(0xFF6FB6E8)),
   personal('개인', Icons.person_outline, Color(0xFF9CCB75));
 
   const ScheduleCategory(this.label, this.icon, this.color);
@@ -88,6 +89,7 @@ class ScheduleItem {
     int? weekday,
     List<int>? weekdays,
     this.date,
+    DateTime? endDate,
     Color? color,
     this.note = '',
     this.done = false,
@@ -101,6 +103,7 @@ class ScheduleItem {
            type == ScheduleType.fixed
                ? _normalizeWeekdays(weekdays ?? <int>[weekday!])
                : <int>[_validWeekday(date!.weekday)],
+       endDate = _normalizeEndDate(type, date, endDate),
        color = color ?? category.color;
 
   final String id;
@@ -116,6 +119,9 @@ class ScheduleItem {
   /// 일회성 일정의 날짜(시각 정보 제외). 고정 일정은 null.
   final DateTime? date;
 
+  /// 일회성 일정이 여러 날에 걸칠 때의 마지막 날짜(포함). 하루짜리면 null.
+  final DateTime? endDate;
+
   final TimeOfDay start;
   final TimeOfDay end;
   final ScheduleCategory category;
@@ -127,12 +133,26 @@ class ScheduleItem {
   int get endMinutes => end.hour * 60 + end.minute;
   int get durationMinutes => endMinutes - startMinutes;
 
+  /// 여러 날에 걸친 일정(여행 등)인지 여부. 종일 일정으로 취급한다.
+  bool get isMultiDay => endDate != null;
+
+  /// 일정이 차지하는 일수. 하루짜리는 1.
+  int get dayCount =>
+      isMultiDay ? endDate!.difference(_dateOnly(date!)).inDays + 1 : 1;
+
   /// 해당 일자에 이 일정이 나타나는지 여부.
   bool occursOn(DateTime day) {
     if (type == ScheduleType.fixed) {
       return weekdays.contains(day.weekday);
     }
-    return date != null && _isSameDate(date!, day);
+    if (date == null) {
+      return false;
+    }
+    if (endDate != null) {
+      final target = _dateOnly(day);
+      return !target.isBefore(_dateOnly(date!)) && !target.isAfter(endDate!);
+    }
+    return _isSameDate(date!, day);
   }
 
   Map<String, Object?> toJson() {
@@ -143,6 +163,7 @@ class ScheduleItem {
       'weekday': weekday,
       'weekdays': type == ScheduleType.fixed ? weekdays : null,
       'date': date == null ? null : _storageDate(date!),
+      'endDate': endDate == null ? null : _storageDate(endDate!),
       'startMinutes': startMinutes,
       'endMinutes': endMinutes,
       'category': category.name,
@@ -179,6 +200,7 @@ class ScheduleItem {
       type: type,
       weekdays: type == ScheduleType.fixed ? weekdays : null,
       date: type == ScheduleType.oneTime ? (date ?? fallbackDate) : null,
+      endDate: _dateFromStorage(json['endDate']),
       start: _timeFromMinutes(_jsonInt(json['startMinutes'], 9 * 60)),
       end: _timeFromMinutes(_jsonInt(json['endMinutes'], 10 * 60)),
       category: category,
@@ -653,6 +675,7 @@ class _ScheduleHomePageState extends State<ScheduleHomePage> {
           initialType: type ?? item?.type ?? ScheduleType.fixed,
           initialWeekdays: item?.weekdays ?? <int>[weekday ?? _anchor.weekday],
           initialDate: date ?? item?.date ?? _anchor,
+          initialEndDate: item?.endDate,
           initialStart:
               start ?? item?.start ?? const TimeOfDay(hour: 9, minute: 0),
           initialEnd: end ?? item?.end ?? const TimeOfDay(hour: 10, minute: 0),
@@ -1152,6 +1175,7 @@ class _TimetableView extends StatelessWidget {
   static const double _headerHeight = 44;
   static const double _timeRailWidth = 28;
   static const int _dayCount = 7;
+  static const double _bannerRowHeight = 22;
 
   final List<ScheduleItem> items;
   final DateTime weekStart;
@@ -1172,7 +1196,19 @@ class _TimetableView extends StatelessWidget {
         );
         final width = _timeRailWidth + dayWidth * _dayCount;
         final hourCount = endHour - startHour;
-        final height = _headerHeight + rowHeight * hourCount;
+        // 여러 날 일정은 요일 헤더 아래 배너 줄로 표시한다.
+        final bannerPlacements = _bannerPlacements();
+        final laneCount =
+            bannerPlacements.isEmpty
+                ? 0
+                : bannerPlacements
+                        .map((placement) => placement.lane)
+                        .reduce(math.max) +
+                    1;
+        final bannerAreaHeight =
+            laneCount == 0 ? 0.0 : laneCount * _bannerRowHeight + 4;
+        final gridTop = _headerHeight + bannerAreaHeight;
+        final height = gridTop + rowHeight * hourCount;
 
         return SingleChildScrollView(
           scrollDirection: Axis.horizontal,
@@ -1198,7 +1234,7 @@ class _TimetableView extends StatelessWidget {
                           timeRailWidth: _timeRailWidth,
                           dayWidth: dayWidth,
                           dayCount: _dayCount,
-                          headerHeight: _headerHeight,
+                          headerHeight: gridTop,
                         ),
                       ),
                     ),
@@ -1207,7 +1243,7 @@ class _TimetableView extends StatelessWidget {
                     for (var index = 0; index < hourCount; index++)
                       Positioned(
                         left: 0,
-                        top: _headerHeight + rowHeight * index + 5,
+                        top: gridTop + rowHeight * index + 5,
                         width: _timeRailWidth - 5,
                         child: Text(
                           _hourLabel(startHour + index),
@@ -1224,7 +1260,7 @@ class _TimetableView extends StatelessWidget {
                       for (var hour = 0; hour < hourCount; hour++)
                         Positioned(
                           left: _timeRailWidth + dayWidth * day,
-                          top: _headerHeight + rowHeight * hour,
+                          top: gridTop + rowHeight * hour,
                           width: dayWidth,
                           height: rowHeight,
                           child: GestureDetector(
@@ -1235,6 +1271,12 @@ class _TimetableView extends StatelessWidget {
                             },
                           ),
                         ),
+                    for (final placement in bannerPlacements)
+                      _buildBanner(
+                        context: context,
+                        placement: placement,
+                        dayWidth: dayWidth,
+                      ),
                     for (var day = 0; day < _dayCount; day++)
                       for (final item in _itemsForColumn(day))
                         _buildPositionedBlock(
@@ -1242,6 +1284,7 @@ class _TimetableView extends StatelessWidget {
                           dayIndex: day,
                           dayWidth: dayWidth,
                           rowHeight: rowHeight,
+                          gridTop: gridTop,
                         ),
                   ],
                 ),
@@ -1312,10 +1355,100 @@ class _TimetableView extends StatelessWidget {
     final startMinutes = startHour * 60;
     final endMinutes = endHour * 60;
     return items.where((item) {
-      return item.occursOn(date) &&
+      return !item.isMultiDay &&
+          item.occursOn(date) &&
           item.endMinutes > startMinutes &&
           item.startMinutes < endMinutes;
     });
+  }
+
+  /// 이번 주에 걸치는 여러 날 일정들을 겹치지 않는 줄(lane)에 배치한다.
+  List<_BannerPlacement> _bannerPlacements() {
+    final weekEnd = weekStart.add(const Duration(days: 6));
+    final multiDayItems =
+        items.where((item) {
+            if (!item.isMultiDay) {
+              return false;
+            }
+            final start = _dateOnly(item.date!);
+            return !item.endDate!.isBefore(weekStart) &&
+                !start.isAfter(weekEnd);
+          }).toList()
+          ..sort((a, b) {
+            final startCompare = a.date!.compareTo(b.date!);
+            if (startCompare != 0) return startCompare;
+            return b.endDate!.compareTo(a.endDate!); // 긴 일정 먼저
+          });
+
+    final placements = <_BannerPlacement>[];
+    final laneEnds = <DateTime>[];
+    for (final item in multiDayItems) {
+      final start = _dateOnly(item.date!);
+      final clippedStart = start.isBefore(weekStart) ? weekStart : start;
+      final clippedEnd =
+          item.endDate!.isAfter(weekEnd) ? weekEnd : item.endDate!;
+      final startIndex = clippedStart.difference(weekStart).inDays;
+      final span = clippedEnd.difference(clippedStart).inDays + 1;
+
+      var lane = laneEnds.indexWhere((end) => end.isBefore(clippedStart));
+      if (lane == -1) {
+        lane = laneEnds.length;
+        laneEnds.add(clippedEnd);
+      } else {
+        laneEnds[lane] = clippedEnd;
+      }
+      placements.add(
+        _BannerPlacement(
+          item: item,
+          lane: lane,
+          startIndex: startIndex,
+          span: span,
+          continuesBefore: start.isBefore(weekStart),
+          continuesAfter: item.endDate!.isAfter(weekEnd),
+        ),
+      );
+    }
+    return placements;
+  }
+
+  Widget _buildBanner({
+    required BuildContext context,
+    required _BannerPlacement placement,
+    required double dayWidth,
+  }) {
+    final item = placement.item;
+    final alpha = item.done ? 130 : 235;
+    return Positioned(
+      left: _timeRailWidth + dayWidth * placement.startIndex + 2,
+      top: _headerHeight + _bannerRowHeight * placement.lane + 1,
+      width: dayWidth * placement.span - 4,
+      height: _bannerRowHeight - 3,
+      child: GestureDetector(
+        onTap: () => onItemTap(item),
+        child: Container(
+          alignment: Alignment.centerLeft,
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          decoration: BoxDecoration(
+            color: item.color.withAlpha(alpha),
+            borderRadius: BorderRadius.circular(5),
+          ),
+          child: Text(
+            '${placement.continuesBefore ? '◂ ' : ''}${item.title}'
+            '${placement.continuesAfter ? ' ▸' : ''}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: Colors.white,
+              fontWeight: FontWeight.w800,
+              fontSize: 10,
+              decoration:
+                  item.done ? TextDecoration.lineThrough : TextDecoration.none,
+              decorationColor: Colors.white,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _buildPositionedBlock({
@@ -1323,12 +1456,13 @@ class _TimetableView extends StatelessWidget {
     required int dayIndex,
     required double dayWidth,
     required double rowHeight,
+    required double gridTop,
   }) {
     final gridStart = startHour * 60;
     final gridEnd = endHour * 60;
     final clippedStart = math.max(item.startMinutes, gridStart);
     final clippedEnd = math.min(item.endMinutes, gridEnd);
-    final top = _headerHeight + ((clippedStart - gridStart) / 60.0) * rowHeight;
+    final top = gridTop + ((clippedStart - gridStart) / 60.0) * rowHeight;
     final height = math.max(
       30.0,
       ((clippedEnd - clippedStart) / 60.0) * rowHeight,
@@ -1346,6 +1480,27 @@ class _TimetableView extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 주간 뷰 배너 한 개의 배치 정보.
+class _BannerPlacement {
+  const _BannerPlacement({
+    required this.item,
+    required this.lane,
+    required this.startIndex,
+    required this.span,
+    required this.continuesBefore,
+    required this.continuesAfter,
+  });
+
+  final ScheduleItem item;
+  final int lane;
+  final int startIndex;
+  final int span;
+
+  /// 일정이 이번 주 이전/이후로 이어지는지 여부(화살표 표시용).
+  final bool continuesBefore;
+  final bool continuesAfter;
 }
 
 class _TimetableGridPainter extends CustomPainter {
@@ -1804,6 +1959,7 @@ class _ScheduleFormSheet extends StatefulWidget {
     required this.initialType,
     required this.initialWeekdays,
     required this.initialDate,
+    required this.initialEndDate,
     required this.initialStart,
     required this.initialEnd,
     required this.onSave,
@@ -1813,6 +1969,7 @@ class _ScheduleFormSheet extends StatefulWidget {
   final ScheduleType initialType;
   final List<int> initialWeekdays;
   final DateTime initialDate;
+  final DateTime? initialEndDate;
   final TimeOfDay initialStart;
   final TimeOfDay initialEnd;
   final ValueChanged<ScheduleItem> onSave;
@@ -1829,11 +1986,16 @@ class _ScheduleFormSheetState extends State<_ScheduleFormSheet> {
   late ScheduleType _type;
   late Set<int> _weekdays;
   late DateTime _date;
+  late DateTime _endDate;
   var _category = ScheduleCategory.lecture;
   var _start = const TimeOfDay(hour: 9, minute: 0);
   var _end = const TimeOfDay(hour: 10, minute: 0);
   String? _timeError;
   String? _weekdayError;
+
+  /// 종료일이 시작일보다 뒤면 여러 날(종일) 일정이다.
+  bool get _isMultiDay =>
+      _type == ScheduleType.oneTime && _endDate.isAfter(_date);
 
   @override
   void initState() {
@@ -1842,6 +2004,10 @@ class _ScheduleFormSheetState extends State<_ScheduleFormSheet> {
     _type = widget.initialType;
     _weekdays = _normalizeWeekdays(widget.initialWeekdays).toSet();
     _date = _dateOnly(widget.initialDate);
+    _endDate = _dateOnly(widget.initialEndDate ?? widget.initialDate);
+    if (_endDate.isBefore(_date)) {
+      _endDate = _date;
+    }
     _start = widget.initialStart;
     _end = widget.initialEnd;
     if (item != null) {
@@ -1938,7 +2104,27 @@ class _ScheduleFormSheetState extends State<_ScheduleFormSheet> {
                   },
                 )
               else
-                _DateButton(date: _date, onPressed: _pickDate),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _DateButton(
+                        label: '시작일',
+                        date: _date,
+                        compact: true,
+                        onPressed: _pickDate,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _DateButton(
+                        label: '종료일',
+                        date: _endDate,
+                        compact: true,
+                        onPressed: _pickEndDate,
+                      ),
+                    ),
+                  ],
+                ),
               const SizedBox(height: 12),
               DropdownButtonFormField<ScheduleCategory>(
                 value: _category,
@@ -1973,33 +2159,54 @@ class _ScheduleFormSheetState extends State<_ScheduleFormSheet> {
                 },
               ),
               const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: _TimeButton(
-                      label: '시작',
-                      time: _start,
-                      onPressed:
-                          () => _pickTime(
-                            initial: _start,
-                            onPicked: (picked) => _start = picked,
-                          ),
+              if (_isMultiDay)
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.info_outline,
+                      size: 16,
+                      color: Color(0xFF8B93A1),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _TimeButton(
-                      label: '종료',
-                      time: _end,
-                      onPressed:
-                          () => _pickTime(
-                            initial: _end,
-                            onPicked: (picked) => _end = picked,
-                          ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '여러 날 일정은 종일 일정으로 표시됩니다.',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: const Color(0xFF8B93A1),
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
                     ),
-                  ),
-                ],
-              ),
+                  ],
+                )
+              else
+                Row(
+                  children: [
+                    Expanded(
+                      child: _TimeButton(
+                        label: '시작',
+                        time: _start,
+                        onPressed:
+                            () => _pickTime(
+                              initial: _start,
+                              onPicked: (picked) => _start = picked,
+                            ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _TimeButton(
+                        label: '종료',
+                        time: _end,
+                        onPressed:
+                            () => _pickTime(
+                              initial: _end,
+                              onPicked: (picked) => _end = picked,
+                            ),
+                      ),
+                    ),
+                  ],
+                ),
               if (_timeError != null) ...[
                 const SizedBox(height: 8),
                 Text(
@@ -2069,6 +2276,24 @@ class _ScheduleFormSheetState extends State<_ScheduleFormSheet> {
       setState(() {
         _date = _dateOnly(picked);
         _weekdays = <int>{_date.weekday};
+        if (_endDate.isBefore(_date)) {
+          _endDate = _date;
+        }
+      });
+    }
+  }
+
+  Future<void> _pickEndDate() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _endDate.isBefore(_date) ? _date : _endDate,
+      firstDate: _date,
+      lastDate: DateTime(now.year + 2, 12, 31),
+    );
+    if (picked != null) {
+      setState(() {
+        _endDate = _dateOnly(picked);
       });
     }
   }
@@ -2095,7 +2320,8 @@ class _ScheduleFormSheetState extends State<_ScheduleFormSheet> {
       });
       return;
     }
-    if (_minutesOf(_end) <= _minutesOf(_start)) {
+    // 여러 날(종일) 일정은 시각을 쓰지 않으므로 시간 검증을 건너뛴다.
+    if (!_isMultiDay && _minutesOf(_end) <= _minutesOf(_start)) {
       setState(() {
         _timeError = '종료 시간이 시작 시간보다 늦어야 합니다.';
       });
@@ -2120,6 +2346,7 @@ class _ScheduleFormSheetState extends State<_ScheduleFormSheet> {
         weekdays:
             _type == ScheduleType.fixed ? _normalizeWeekdays(_weekdays) : null,
         date: _type == ScheduleType.oneTime ? _date : null,
+        endDate: _isMultiDay ? _endDate : null,
         start: _start,
         end: _end,
         category: _category,
@@ -2231,10 +2458,19 @@ class _TimeButton extends StatelessWidget {
 }
 
 class _DateButton extends StatelessWidget {
-  const _DateButton({required this.date, required this.onPressed});
+  const _DateButton({
+    required this.date,
+    required this.onPressed,
+    this.label = '날짜',
+    this.compact = false,
+  });
 
   final DateTime date;
   final VoidCallback onPressed;
+  final String label;
+
+  /// 좁은 자리(시작일/종료일 나란히)용 짧은 날짜 표기.
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -2252,13 +2488,17 @@ class _DateButton extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  '날짜',
+                  label,
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
                     color: const Color(0xFF667085),
                   ),
                 ),
                 Text(
-                  _formatFullDate(date),
+                  compact
+                      ? '${date.year}.${date.month}.${date.day} (${_weekdayLabel(date.weekday)})'
+                      : _formatFullDate(date),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: Theme.of(
                     context,
                   ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900),
@@ -2420,7 +2660,7 @@ class _DayRow extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '${_formatTime(item.start)}-${_formatTime(item.end)}${item.note.isEmpty ? '' : ' · ${item.note}'}',
+                  '${item.isMultiDay ? '종일 · ${_formatDate(item.date!)} ~ ${_formatDate(item.endDate!)}' : '${_formatTime(item.start)}-${_formatTime(item.end)}'}${item.note.isEmpty ? '' : ' · ${item.note}'}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -2592,6 +2832,8 @@ class _AgendaRow extends StatelessWidget {
     final when =
         item.type == ScheduleType.fixed
             ? '매주 ${_formatWeekdays(item.weekdays)} ${_formatTime(item.start)}-${_formatTime(item.end)}'
+            : item.isMultiDay
+            ? '${_formatDate(item.date!)}(${_weekdayLabel(item.date!.weekday)}) ~ ${_formatDate(item.endDate!)}(${_weekdayLabel(item.endDate!.weekday)}) 종일'
             : '${_formatDate(item.date!)}(${_weekdayLabel(item.weekday)}) ${_formatTime(item.start)}-${_formatTime(item.end)}';
 
     return Padding(
@@ -2700,6 +2942,8 @@ class _ItemDetailSheet extends StatelessWidget {
     final when =
         item.type == ScheduleType.fixed
             ? '매주 ${_formatWeekdays(item.weekdays, includeSuffix: true)} ${_formatTime(item.start)}-${_formatTime(item.end)}'
+            : item.isMultiDay
+            ? '${_formatFullDate(item.date!)} ~ ${_formatFullDate(item.endDate!)} · ${item.dayCount}일간'
             : '${_formatFullDate(item.date!)} ${_formatTime(item.start)}-${_formatTime(item.end)}';
 
     return Padding(
@@ -2854,6 +3098,15 @@ String _storageDate(DateTime date) {
   final month = date.month.toString().padLeft(2, '0');
   final day = date.day.toString().padLeft(2, '0');
   return '$year-$month-$day';
+}
+
+/// 일회성 일정에서 시작일보다 뒤인 경우에만 종료일을 유지한다.
+DateTime? _normalizeEndDate(ScheduleType type, DateTime? date, DateTime? end) {
+  if (type != ScheduleType.oneTime || date == null || end == null) {
+    return null;
+  }
+  final endOnly = _dateOnly(end);
+  return endOnly.isAfter(_dateOnly(date)) ? endOnly : null;
 }
 
 DateTime? _dateFromStorage(Object? value) {
